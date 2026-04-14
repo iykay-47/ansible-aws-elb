@@ -1,0 +1,83 @@
+---
+- name: Destroy AWS Infrastructure
+  hosts: localhost
+  gather_facts: false
+  connection: localhost
+  vars_files: vars.yml
+
+  tasks:
+  - name: Destroy Instances
+    amazon.aws.ec2_instance:
+      state: absent
+      filters:
+        "tag:env": test
+
+# Delete load balancer
+  - name: Remove ELB
+    amazon.aws.elb_application_lb:
+      name: "{{ project_name }}"
+      state: absent
+
+# Delete Target Group
+  - name: Delete Target Group
+    community.aws.elb_target_group:
+      name: "{{ project_name }}"
+      state: absent
+
+  - name: Destroy Load balancer Security Groups
+    amazon.aws.ec2_security_group:
+      state: absent
+      name: elb_sg
+
+  - name: Destroy Instance Security Groups
+    amazon.aws.ec2_security_group:
+      state: absent
+      name: static
+
+  - name: Get info on vpc
+    amazon.aws.ec2_vpc_net_info:
+      filters:
+        "tag:stack": webserver
+
+    register: vpc_info
+
+  # - name: Show info
+  #   ansible.builtin.debug:
+  #     msg: "{{ item.vpc_id }}"
+  #   loop: "{{ vpc_info.vpcs | list }}"
+
+  - name: Dettach Route Table
+    amazon.aws.ec2_vpc_route_table:
+      vpc_id: "{{ item.vpc_id }}"
+      region: "{{ region }}"
+      tags: "{{ main_tags }}"
+      lookup: tag
+      state: absent
+    loop: "{{ vpc_info.vpcs }}"
+
+  - name: Delete IGW
+    amazon.aws.ec2_vpc_igw:
+      state: absent
+      vpc_id: "{{ item.vpc_id }}"
+    loop: "{{ vpc_info.vpcs }}"
+
+  - name: Delete public subnet
+    amazon.aws.ec2_vpc_subnet:
+      state: absent
+      vpc_id: "{{ item.vpc_id }}"
+      cidr: "{{ public_subnet_cidr }}"
+    loop: "{{ vpc_info.vpcs }}"
+
+  - name: Delete private subnet
+    amazon.aws.ec2_vpc_subnet:
+      state: absent
+      vpc_id: "{{ item.vpc_id }}"
+      cidr: "{{ pub2_subnet_cidr }}"
+    loop: "{{ vpc_info.vpcs }}"
+
+
+  - name: Delete VPC and associated resourves
+    amazon.aws.ec2_vpc_net:
+      vpc_id: "{{ item.vpc_id }}"
+      state: absent
+    loop: "{{ vpc_info.vpcs }}"

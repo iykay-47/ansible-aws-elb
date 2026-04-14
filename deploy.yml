@@ -1,0 +1,4 @@
+---
+
+- ansible.builtin.import_playbook: aws.yml
+- ansible.builtin.import_playbook: webserver.yaml

@@ -1,0 +1,30 @@
+---
+# Aws config
+region: us-east-2
+
+project_name: ans-aws-alb
+
+main_tags:
+  managed_by: ansible
+  env: test
+  stack: webserver
+
+ami_id: ami-0f5fcdfbd140e4ab7
+
+ports:
+  - 80
+  - 443
+
+subnet:
+ one: "us-east-2a"
+ two: "us-east-2b"
+
+public_subnet_cidr: 10.15.0.0/28
+
+pub2_subnet_cidr: 10.15.0.16/28
+
+key_name: your_key_name
+
+ssh_key_path: "~/iykay_key.pem"
+
+ssh_ip: "0.0.0.0/0" # Change to your ip-address

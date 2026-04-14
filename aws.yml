@@ -1,0 +1,248 @@
+---
+- name: provision aws vpc and security groups
+  hosts: localhost
+  gather_facts: false
+  connection: localhost
+  vars_files: vars.yml
+
+  tasks:
+  - name: create vpc
+    amazon.aws.ec2_vpc_net:
+      name: test_vpc
+      region: "{{ region }}"
+      state: present
+      cidr_block: 10.15.0.0/16
+      tags: "{{ main_tags }}"
+    register: test
+
+  # - name: Debug variables
+  #   ansible.builtin.debug:
+  #     var: test
+
+  - name: create public subnet
+    amazon.aws.ec2_vpc_subnet:
+      region: "{{ region }}"
+      az: "{{ subnet.one }}"
+      cidr: 10.15.0.0/28
+      state: present
+      vpc_id: "{{ test.vpc.id }}"
+      tags: "{{ main_tags }}"
+    register: pub_subnet
+  
+  - name: create second subnet
+    amazon.aws.ec2_vpc_subnet:
+      region: "{{ region }}"
+      az: "{{ subnet.two }}"
+      cidr: 10.15.0.16/28
+      state: present
+      vpc_id: "{{ test.vpc.id }}"
+      tags: "{{ main_tags }}"
+    register: pub_subnet2
+
+  # - name: print variables
+  #   ansible.builtin.debug:
+  #     var: pub_subnet2
+
+  - name: create internet gateway
+    amazon.aws.ec2_vpc_igw:
+      vpc_id: "{{ test.vpc.id }}"
+      region: "{{ region }}"
+      state: present
+      tags: "{{ main_tags }}"
+    register: gateway
+
+  # - name: print variables
+  #   ansible.builtin.debug:
+  #     var: gateway
+
+  - name: create route
+    amazon.aws.ec2_vpc_route_table:
+      vpc_id: "{{ test.vpc.id }}"
+      region: "{{ region }}"
+      state: present
+      subnets:
+        - "{{ pub_subnet.subnet.id }}"
+        - "{{ pub_subnet2.subnet.id }}"
+      routes:
+        - dest: 0.0.0.0/0
+          gateway_id: "{{ gateway.gateway_id }}"
+        - dest: ::/0
+          gateway_id: "{{ gateway.gateway_id }}"
+      tags: "{{ main_tags }}"
+    register: route_table
+
+  # - name: print variables
+  #   ansible.builtin.debug:
+  #     var: route_table
+
+# Create security groups
+  - name: create security group for new instance
+    amazon.aws.ec2_security_group:
+      vpc_id: "{{ test.vpc.id }}"
+      region: "{{ region }}"
+      rules:
+        - cidr_ip: 0.0.0.0/0
+          ports: "{{ ports }}"
+          proto: "tcp"
+          rule_desc: "allow http, https"
+        - cidr_ip: "{{ ssh_ip }}"
+          ports: 22
+          proto: "tcp"
+          rule_desc: allow ssh from only my ip
+
+      rules_egress:
+        - rule_desc: "allow traffic from everywhere"
+          cidr_ip: 0.0.0.0/0
+          proto: all
+          ports: -1
+
+      name: static
+      description: "allow ssh, http and https"
+      tags: "{{ main_tags }}"
+    register: static_sg
+
+  # Create security group for elb
+  - name: create security group for load_balancer
+    amazon.aws.ec2_security_group:
+      vpc_id: "{{ test.vpc.id }}"
+      region: "{{ region }}"
+      rules:
+        - cidr_ip: 0.0.0.0/0
+          ports: 80
+          proto: "tcp"
+          rule_desc: "allow http, https and ssh"
+
+      rules_egress:
+        - rule_desc: "allow traffic to everywhere"
+          cidr_ip: 0.0.0.0/0
+          proto: all
+          ports: -1
+
+      name: elb_sg
+      description: "allow ssh, http and https"
+      tags: "{{ main_tags }}"
+    register: elb_sg
+
+  # - name: print variables
+  #   ansible.builtin.debug:
+  #     var: static_sg
+
+# Create instance
+  - name: create first set of ec2_instances
+    amazon.aws.ec2_instance:
+      name: static
+      count: 2
+      image_id: "{{ ami_id }}"
+      instance_type: t2.micro
+      key_name: "{{ key_name }}"
+      security_group: "{{ static_sg.group_id }}"
+      state: running
+      network_interfaces:
+        - assign_public_ip: true
+      tags:
+        id: static
+        managed_by: Ansible
+        env: test
+      vpc_subnet_id: "{{ pub_subnet.subnet.id }}"
+      wait: true
+      wait_timeout: 600
+    register: ec2
+
+# Create instance in second subnet
+  - name: create seconf set of ec2_instances
+    amazon.aws.ec2_instance:
+      name: static-2
+      count: 2
+      image_id: "{{ ami_id }}"
+      instance_type: t2.micro
+      key_name: "{{ key_name }}"
+      security_group: "{{ static_sg.group_id }}"
+      state: running
+      network_interfaces:
+        - assign_public_ip: true
+      tags:
+        id: static-2
+        managed_by: Ansible
+        env: test
+      vpc_subnet_id: "{{ pub_subnet2.subnet.id }}"
+      wait: true
+      wait_timeout: 600
+    register: ec2_pub2
+
+# Add instance host to inventory
+  - name: add host
+    ansible.builtin.add_host:
+      host: "{{ item.public_ip_address }}"
+      groups: aws
+      ansible_user: ubuntu
+      ansible_ssh_private_key_file: "{{ ssh_key_path }}"
+      ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+    loop: "{{ ec2.instances | list }}"
+
+  - name: add host second time
+    ansible.builtin.add_host:
+      host: "{{ item.public_ip_address }}"
+      groups: aws
+      ansible_user: ubuntu
+      ansible_ssh_private_key_file: "{{ ssh_key_path }}"
+      ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+    loop: "{{ ec2_pub2.instances | list }}"
+
+  - name: wait for ssh
+    ansible.builtin.wait_for:
+      host: "{{ item.public_ip_address }}"
+      port: 22
+      delay: 10
+      timeout: 300
+    loop: "{{ ec2.instances + ec2_pub2.instances | list }}"
+
+
+# create target group
+  - name: create elb_target group
+    community.aws.elb_target_group:
+      name: "{{ project_name }}"
+      region: "{{ region }}"
+      protocol: HTTP
+      port: 80
+      vpc_id: "{{ test.vpc.id }}"
+      health_check_protocol: HTTP
+      health_check_port: 80
+      health_check_path: /
+      health_check_interval: 30
+      health_check_timeout: 5
+      healthy_threshold_count: 5
+      successful_response_codes: "200,250-260"
+      stickiness_enabled: true # Set to false when testing
+      stickiness_app_cookie_duration: 3600
+      target_type: instance
+      state: present
+      # wait: true
+      # wait_timeout: 600
+
+  - name: add instances to elb target group
+    community.aws.elb_target:
+      target_group_name: "{{ project_name }}"
+      target_id: "{{ item.instance_id }}"
+      target_port: 80
+      state: present
+    loop: "{{ ec2.instances + ec2_pub2.instances | list }}"
+
+# Create elb
+  - name: create elb
+    amazon.aws.elb_application_lb:
+      name: "{{ project_name }}"
+      scheme: internet-facing
+      ip_address_type: ipv4
+      security_groups:
+        - static
+        - elb_sg
+      subnets:
+        - "{{ pub_subnet.subnet.id }}"
+        - "{{ pub_subnet2.subnet.id }}"
+      listeners:
+        - Protocol: HTTP
+          Port: 80
+          DefaultActions:
+            - Type: forward
+              TargetGroupName: "{{ project_name }}"
+      state: present

@@ -1,0 +1,67 @@
+---
+# Create a webserver with custom index.html
+- name: Practice web server
+  hosts: aws
+  become: true
+  handlers:
+    - name: restart webserver
+      ansible.builtin.service:
+        name: apache2
+        state: restarted
+  # become: yes
+  tasks:
+
+# Update packages (Ubuntu)
+  - name: Update server packages
+    ansible.builtin.apt:
+      state: latest
+      update_cache: yes
+      cache_valid_time: 3600
+
+# Install webserver and dependencies
+  - name: Install Apache and unzip
+    ansible.builtin.apt:
+      name:
+        - apache2
+        - unzip
+        - wget
+      state: latest
+
+# Start and enable webserver
+  - name: Start and enable server
+    ansible.builtin.service:
+      name: apache2
+      state: started
+      enabled: yes
+
+# create webpage dir and set permissions
+  - name: create web dir for website
+    ansible.builtin.file:
+      name: /var/www/html
+      state: directory
+      group: www-data
+      owner: www-data
+      mode: '0775'
+
+# set firewall rule for  
+  - name: set firewall to allow http
+    community.general.ufw:
+      state: enabled
+      port: '{{ item }}'
+      log: true
+      rule: allow
+    loop:
+      - '22'
+      - '80'
+
+# Change index.html
+  - name: change index html return_content
+    ansible.builtin.template:
+      src: index_html.j2
+      dest: /var/www/html/index.html
+    notify: restart webserver
+
+  - name: check connection
+    ansible.builtin.uri:
+      url: http://127.0.0.1
+      return_content: true
